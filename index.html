@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bottle Detector</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+    #container { display: flex; flex-direction: column; align-items: center; }
+    #imageUpload { margin: 20px 0; }
+    #imagePreview { max-width: 300px; max-height: 300px; margin: 20px 0; border: 2px solid #ddd; display: none; }
+    #loader { display: none; margin: 20px 0; }
+    #result { font-size: 20px; font-weight: bold; padding: 15px; border-radius: 5px; margin: 10px 0; width: 100%; text-align: center; }
+    .bottle { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .not-bottle { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    .uncertain { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+    #confidenceBar { height: 20px; width: 100%; background: #eee; border-radius: 10px; overflow: hidden; margin: 10px 0; }
+    #confidenceProgress { height: 100%; background: linear-gradient(90deg, red, yellow, green); transition: width 0.3s; }
+    #testSection { margin-top: 30px; width: 100%; }
+    #runTests { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 10px 0; }
+    #testResults { margin-top: 20px; }
+    .test-result { margin: 5px 0; padding: 5px; border-radius: 3px; }
+    .correct { background-color: #d4edda; }
+    .incorrect { background-color: #f8d7da; }
+    .error { background-color: #fff3cd; }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <h1>Bottle Detection System</h1>
+    
+    <h2>Image Detection</h2>
+    <input type="file" id="imageUpload" accept="image/*" />
+    <img id="imagePreview" alt="Preview" />
+    <div id="loader">Loading model...</div>
+    <div id="result"></div>
+    <div id="confidenceBar">
+      <div id="confidenceProgress"></div>
+    </div>
+    
+    <div id="testSection">
+      <h2>Run Tests</h2>
+      <button id="runTests" style="display: none;">Run Tests</button>
+      <div id="testResults"></div>
+    </div>
+  </div>
+
+  <script>
+    // Configuration
+    const MODEL_PATH = './model/model.json';
+    const INPUT_SHAPE = [150, 150]; // Match your model's input shape
+    const TEST_IMAGES = [
+      {url: 'test_bottle.jpg', expected: true, name: "Known Bottle"},
+      {url: 'test_not_bottle.jpg', expected: false, name: "Known Non-Bottle"}
+    ];
+    
+    // Global variables
+    let model;
+    
+    // Main initialization
+    async function initialize() {
+      await loadModel();
+      setupEventListeners();
+    }
+    
+    // Model loading with improved error handling
+    async function loadModel() {
+      showLoader();
+      try {
+        model = await tf.loadGraphModel(MODEL_PATH);
+        console.log("Model loaded successfully");
+        
+        // Warm up the model
+        const warmupTensor = tf.zeros([1, ...INPUT_SHAPE, 3]);
+        await model.predict(warmupTensor).data();
+        warmupTensor.dispose();
+        
+        document.getElementById('runTests').style.display = 'inline-block';
+      } catch (error) {
+        console.error("Error loading model:", error);
+        document.getElementById('loader').innerHTML = 
+          'Error loading model. Check console for details.';
+      } finally {
+        hideLoader();
+      }
+    }
+    
+    // Enhanced image prediction with proper preprocessing and confidence inversion
+    async function predictImage(imgElement) {
+      if (!model) {
+        alert("Model not loaded yet. Please wait or check for errors.");
+        return null;
+      }
+
+      try {
+        // Validate image size
+        if (imgElement.width < 50 || imgElement.height < 50) {
+          alert("Image is too small. Please upload a larger image.");
+          return null;
+        }
+
+        // Convert to tensor and resize
+        let tensor = tf.browser.fromPixels(imgElement)
+          .resizeNearestNeighbor(INPUT_SHAPE)
+          .toFloat();
+        
+        // Normalize pixel values to [0,1]
+        tensor = tensor.div(255.0);
+        
+        // Add batch dimension
+        tensor = tensor.expandDims();
+        
+        // Make prediction and measure time
+        const startTime = performance.now();
+        const prediction = await model.predict(tensor).data();
+        const endTime = performance.now();
+        console.log(`Prediction took ${(endTime - startTime).toFixed(1)}ms`);
+        
+        // INVERT THE CONFIDENCE (1 - score) because model outputs are reversed
+        // Model outputs high values for "not bottle" and low for "bottle"
+        // We want high values to mean "bottle" and low to mean "not bottle"
+        const bottleConfidence = 1 - prediction[0];
+        
+        // Clean up memory
+        tensor.dispose();
+        
+        return bottleConfidence;
+      } catch (error) {
+        console.error("Prediction error:", error);
+        return null;
+      }
+    }
+    
+    // Display results with correct confidence interpretation
+    async function displayResult(confidence) {
+      const resultDiv = document.getElementById('result');
+      const confidenceBar = document.getElementById('confidenceProgress');
+      const confidencePercent = (confidence * 100).toFixed(1);
+      
+      // Update confidence bar (now correctly represents bottle confidence)
+      confidenceBar.style.width = `${confidence * 100}%`;
+      
+      // Classification logic with correct thresholds
+      if (confidence > 0.9) {
+        resultDiv.textContent = `✅ Definitely a bottle (${confidencePercent}% confidence)`;
+        resultDiv.className = 'bottle';
+      } else if (confidence > 0.7) {
+        resultDiv.textContent = `👍 Likely a bottle (${confidencePercent}% confidence)`;
+        resultDiv.className = 'bottle';
+      } else if (confidence > 0.4) {
+        resultDiv.textContent = `❓ Uncertain (${confidencePercent}% confidence)`;
+        resultDiv.className = 'uncertain';
+      } else {
+        resultDiv.textContent = `❌ Not a bottle (${confidencePercent}% confidence)`;
+        resultDiv.className = 'not-bottle';
+      }
+    }
+    
+    // Test known images with proper image loading and inverted confidence handling
+    async function testKnownImages() {
+      if (!model) {
+        alert("Model not loaded yet. Please try again shortly.");
+        return;
+      }
+      
+      const testResultsDiv = document.getElementById('testResults');
+      testResultsDiv.innerHTML = "<h3>Running Tests...</h3>";
+      let correct = 0;
+      
+      for (const test of TEST_IMAGES) {
+        try {
+          const img = new Image();
+          img.src = test.url;
+          
+          // Wait for image to load with timeout
+          await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = () => reject(new Error(`Failed to load test image: ${test.url}`));
+            setTimeout(() => reject(new Error("Image load timeout")), 5000);
+          });
+          
+          const confidence = await predictImage(img);
+          if (confidence === null) continue;
+          
+          // Note: We're using the inverted confidence here
+          const isBottle = confidence > 0.5;
+          const isCorrect = isBottle === test.expected;
+          
+          const resultDiv = document.createElement('div');
+          resultDiv.className = `test-result ${isCorrect ? 'correct' : 'incorrect'}`;
+          
+          resultDiv.innerHTML = `
+            <strong>${test.name}:</strong>
+            ${isCorrect ? '✓' : '✗'} 
+            Predicted: ${isBottle ? 'Bottle' : 'Not Bottle'} 
+            (${(confidence * 100).toFixed(1)}% confidence)
+            ${isCorrect ? '' : ' - Expected: ' + (test.expected ? 'Bottle' : 'Not Bottle')}
+          `;
+          
+          testResultsDiv.appendChild(resultDiv);
+          if (isCorrect) correct++;
+          
+        } catch (error) {
+          console.error(`Test failed for ${test.name}:`, error);
+          const errorDiv = document.createElement('div');
+          errorDiv.className = 'test-result error';
+          errorDiv.textContent = `${test.name}: Error - ${error.message}`;
+          testResultsDiv.appendChild(errorDiv);
+        }
+      }
+      
+      const accuracy = (correct / TEST_IMAGES.length * 100).toFixed(1);
+      testResultsDiv.innerHTML += `
+        <div style="margin-top: 10px; font-weight: bold;">
+          Test Summary: ${correct} of ${TEST_IMAGES.length} correct (${accuracy}% accuracy)
+        </div>
+      `;
+    }
+    
+    // Helper functions
+    function showLoader() {
+      document.getElementById('loader').style.display = 'block';
+    }
+    
+    function hideLoader() {
+      document.getElementById('loader').style.display = 'none';
+    }
+    
+    function setupEventListeners() {
+      // Image upload handler
+      document.getElementById('imageUpload').addEventListener('change', async function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        const reader = new FileReader();
+        reader.onload = async function(event) {
+          const img = document.getElementById('imagePreview');
+          img.onload = async function() {
+            const confidence = await predictImage(img);
+            if (confidence !== null) {
+              await displayResult(confidence);
+            }
+          };
+          img.src = event.target.result;
+          img.style.display = 'block';
+        };
+        reader.readAsDataURL(file);
+      });
+      
+      // Test button handler
+      document.getElementById('runTests').addEventListener('click', testKnownImages);
+    }
+    
+    // Initialize the application
+    initialize();
+  </script>
+</body>
+</html>
